@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
@@ -16,30 +17,205 @@ import (
 )
 
 type usageReporter struct {
-	provider    string
-	model       string
-	authID      string
-	authIndex   string
-	apiKey      string
-	source      string
-	requestedAt time.Time
-	once        sync.Once
+	provider      string
+	model         string
+	thinkingLevel string
+	authID        string
+	authIndex     string
+	apiKey        string
+	source        string
+	requestedAt   time.Time
+	once          sync.Once
 }
 
 func newUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *usageReporter {
 	apiKey := apiKeyFromContext(ctx)
 	reporter := &usageReporter{
-		provider:    provider,
-		model:       model,
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
+		provider:      provider,
+		model:         model,
+		thinkingLevel: resolveThinkingLevel(ctx, model),
+		requestedAt:   time.Now(),
+		apiKey:        apiKey,
+		source:        resolveUsageSource(auth, apiKey),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
 	}
 	return reporter
+}
+
+func resolveThinkingLevel(ctx context.Context, model string) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	fromFormat := ""
+	if handler, ok := ctx.Value("handler").(interface{ HandlerType() string }); ok && handler != nil {
+		fromFormat = strings.TrimSpace(handler.HandlerType())
+	}
+	payload := extractThinkingPayload(ginCtx)
+	if len(payload) == 0 {
+		return ""
+	}
+	config := extractThinkingConfigFromPayload(payload, fromFormat)
+	if config.Mode == thinking.ModeBudget {
+		return strings.TrimSpace(thinking.ParseSuffix(model).RawSuffix)
+	}
+	if config.Mode == thinking.ModeLevel {
+		return strings.TrimSpace(string(config.Level))
+	}
+	if config.Mode == thinking.ModeAuto {
+		return "auto"
+	}
+	if config.Mode == thinking.ModeNone {
+		return "none"
+	}
+	return ""
+}
+
+func extractThinkingPayload(ginCtx *gin.Context) []byte {
+	if ginCtx == nil {
+		return nil
+	}
+	if payload, ok := ginCtx.Get("REQUEST_BODY_OVERRIDE"); ok {
+		switch value := payload.(type) {
+		case []byte:
+			if len(value) > 0 {
+				return value
+			}
+		case string:
+			if strings.TrimSpace(value) != "" {
+				return []byte(value)
+			}
+		}
+	}
+	if payload, ok := ginCtx.Get("API_REQUEST"); ok {
+		switch value := payload.(type) {
+		case []byte:
+			return value
+		case string:
+			if strings.TrimSpace(value) != "" {
+				return []byte(value)
+			}
+		}
+	}
+	return nil
+}
+
+func extractThinkingConfigFromPayload(payload []byte, fromFormat string) thinking.ThinkingConfig {
+	fromFormat = strings.ToLower(strings.TrimSpace(fromFormat))
+	if fromFormat == "" {
+		return thinking.ThinkingConfig{}
+	}
+	switch fromFormat {
+	case "openai", "openai-response", "codex":
+		return thinkingConfigFromOpenAI(payload)
+	case "claude":
+		return thinkingConfigFromClaude(payload)
+	case "gemini", "gemini-cli":
+		return thinkingConfigFromGemini(payload, fromFormat)
+	default:
+		return thinking.ThinkingConfig{}
+	}
+}
+
+func thinkingConfigFromClaude(payload []byte) thinking.ThinkingConfig {
+	thinkingType := gjson.GetBytes(payload, "thinking.type").String()
+	if thinkingType == "disabled" {
+		return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+	}
+	if thinkingType == "adaptive" || thinkingType == "auto" {
+		if effort := gjson.GetBytes(payload, "output_config.effort"); effort.Exists() && effort.Type == gjson.String {
+			value := strings.ToLower(strings.TrimSpace(effort.String()))
+			if value == "" {
+				return thinking.ThinkingConfig{}
+			}
+			switch value {
+			case "none":
+				return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+			case "auto":
+				return thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1}
+			default:
+				return thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(value)}
+			}
+		}
+		return thinking.ThinkingConfig{}
+	}
+	if budget := gjson.GetBytes(payload, "thinking.budget_tokens"); budget.Exists() {
+		value := int(budget.Int())
+		switch value {
+		case 0:
+			return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+		case -1:
+			return thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1}
+		default:
+			return thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: value}
+		}
+	}
+	if thinkingType == "enabled" {
+		return thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1}
+	}
+	return thinking.ThinkingConfig{}
+}
+
+func thinkingConfigFromGemini(payload []byte, provider string) thinking.ThinkingConfig {
+	prefix := "generationConfig.thinkingConfig"
+	if provider == "gemini-cli" {
+		prefix = "request.generationConfig.thinkingConfig"
+	}
+	level := gjson.GetBytes(payload, prefix+".thinkingLevel")
+	if !level.Exists() {
+		level = gjson.GetBytes(payload, prefix+".thinking_level")
+	}
+	if level.Exists() {
+		value := level.String()
+		switch value {
+		case "none":
+			return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+		case "auto":
+			return thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1}
+		default:
+			return thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(value)}
+		}
+	}
+	budget := gjson.GetBytes(payload, prefix+".thinkingBudget")
+	if !budget.Exists() {
+		budget = gjson.GetBytes(payload, prefix+".thinking_budget")
+	}
+	if budget.Exists() {
+		value := int(budget.Int())
+		switch value {
+		case 0:
+			return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+		case -1:
+			return thinking.ThinkingConfig{Mode: thinking.ModeAuto, Budget: -1}
+		default:
+			return thinking.ThinkingConfig{Mode: thinking.ModeBudget, Budget: value}
+		}
+	}
+	return thinking.ThinkingConfig{}
+}
+
+func thinkingConfigFromOpenAI(payload []byte) thinking.ThinkingConfig {
+	if effort := gjson.GetBytes(payload, "reasoning_effort"); effort.Exists() {
+		value := effort.String()
+		if value == "none" {
+			return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+		}
+		return thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(value)}
+	}
+	if effort := gjson.GetBytes(payload, "reasoning.effort"); effort.Exists() {
+		value := effort.String()
+		if value == "none" {
+			return thinking.ThinkingConfig{Mode: thinking.ModeNone, Budget: 0}
+		}
+		return thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(value)}
+	}
+	return thinking.ThinkingConfig{}
 }
 
 func (r *usageReporter) publish(ctx context.Context, detail usage.Detail) {
@@ -83,6 +259,9 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			RequestedAt: r.requestedAt,
 			Failed:      failed,
 			Detail:      detail,
+			Thinking: usage.ThinkingDetail{
+				ThinkingLevel: r.thinkingLevel,
+			},
 		})
 	})
 }
@@ -106,6 +285,9 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			RequestedAt: r.requestedAt,
 			Failed:      false,
 			Detail:      usage.Detail{},
+			Thinking: usage.ThinkingDetail{
+				ThinkingLevel: r.thinkingLevel,
+			},
 		})
 	})
 }
