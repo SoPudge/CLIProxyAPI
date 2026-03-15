@@ -19,6 +19,7 @@ type Record struct {
 	RequestedAt time.Time
 	Failed      bool
 	Detail      Detail
+	Thinking    ThinkingDetail
 }
 
 // Detail holds the token usage breakdown.
@@ -28,6 +29,11 @@ type Detail struct {
 	ReasoningTokens int64
 	CachedTokens    int64
 	TotalTokens     int64
+}
+
+// ThinkingDetail holds request-level thinking metadata.
+type ThinkingDetail struct {
+	ThinkingLevel string
 }
 
 // Plugin consumes usage records emitted by the proxy runtime.
