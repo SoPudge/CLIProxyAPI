@@ -173,6 +173,31 @@ func (h *OpenAIAPIHandler) Completions(c *gin.Context) {
 
 }
 
+// Embeddings handles the /v1/embeddings endpoint.
+// It forwards OpenAI-compatible embeddings requests through the core auth manager.
+func (h *OpenAIAPIHandler) Embeddings(c *gin.Context) {
+	rawJSON, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+	if gjson.GetBytes(rawJSON, "model").String() == "" {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: "model is required",
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
+	h.handleNonStreamingResponseWithAlt(c, rawJSON, "embeddings")
+}
+
 // convertCompletionsRequestToChatCompletions converts OpenAI completions API request to chat completions format.
 // This allows the completions endpoint to use the existing chat completions infrastructure.
 //
@@ -427,11 +452,17 @@ func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
 //   - c: The Gin context containing the HTTP request and response
 //   - rawJSON: The raw JSON bytes of the OpenAI-compatible request
 func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
+	h.handleNonStreamingResponseWithAlt(c, rawJSON, h.GetAlt(c))
+}
+
+func (h *OpenAIAPIHandler) handleNonStreamingResponseWithAlt(c *gin.Context, rawJSON []byte, alt string) {
 	c.Header("Content-Type", "application/json")
 
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, h.GetAlt(c))
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
 		cliCancel(errMsg.Error)
