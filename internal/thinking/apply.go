@@ -288,7 +288,10 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 	if suffixResult.HasSuffix {
 		config = parseSuffixToConfig(suffixResult.RawSuffix, toFormat, modelID)
 	} else {
-		config = extractThinkingConfig(body, toFormat)
+		config = extractThinkingConfig(body, fromFormat)
+		if !hasThinkingConfig(config) && fromFormat != toFormat {
+			config = extractThinkingConfig(body, toFormat)
+		}
 	}
 
 	if !hasThinkingConfig(config) {
@@ -322,6 +325,9 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 
 func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
 	if config.Mode != ModeLevel {
+		return config
+	}
+	if toFormat == "claude" {
 		return config
 	}
 	if !isBudgetCapableProvider(toFormat) {
