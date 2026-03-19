@@ -2,6 +2,7 @@
 package thinking
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -241,6 +242,36 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 	return ThinkingConfig{}
 }
 
+// ThinkingLevelForUsage returns a normalized thinking value suitable for usage reporting.
+// Suffix configuration takes priority over request-body configuration.
+func ThinkingLevelForUsage(body []byte, model string, fromFormat string) string {
+	fromFormat = strings.ToLower(strings.TrimSpace(fromFormat))
+	suffixResult := ParseSuffix(strings.TrimSpace(model))
+	if suffixResult.HasSuffix {
+		return thinkingValueForUsage(parseSuffixToConfig(suffixResult.RawSuffix, fromFormat, model))
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return ""
+	}
+	return thinkingValueForUsage(extractThinkingConfig(body, fromFormat))
+}
+
+func thinkingValueForUsage(config ThinkingConfig) string {
+	switch config.Mode {
+	case ModeBudget:
+		if config.Budget > 0 {
+			return strconv.Itoa(config.Budget)
+		}
+	case ModeLevel:
+		return strings.TrimSpace(string(config.Level))
+	case ModeAuto:
+		return "auto"
+	case ModeNone:
+		return "none"
+	}
+	return ""
+}
+
 // applyUserDefinedModel applies thinking configuration for user-defined models
 // without ThinkingSupport validation.
 func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat string, suffixResult SuffixResult) ([]byte, error) {
@@ -319,7 +350,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractGeminiConfig(body, provider)
 	case "openai":
 		return extractOpenAIConfig(body)
-	case "codex":
+	case "openai-response", "codex":
 		return extractCodexConfig(body)
 	case "iflow":
 		config := extractIFlowConfig(body)
