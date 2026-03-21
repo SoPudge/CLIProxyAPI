@@ -89,11 +89,12 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	Source    string     `json:"source"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	Timestamp     time.Time  `json:"timestamp"`
+	Source        string     `json:"source"`
+	AuthIndex     string     `json:"auth_index"`
+	Tokens        TokenStats `json:"tokens"`
+	ThinkingLevel string     `json:"thinking_level"`
+	Failed        bool       `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -197,11 +198,12 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		s.apis[statsKey] = stats
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp: timestamp,
-		Source:    record.Source,
-		AuthIndex: record.AuthIndex,
-		Tokens:    detail,
-		Failed:    failed,
+		Timestamp:     timestamp,
+		Source:        record.Source,
+		AuthIndex:     record.AuthIndex,
+		Tokens:        detail,
+		ThinkingLevel: strings.TrimSpace(record.Thinking.ThinkingLevel),
+		Failed:        failed,
 	})
 
 	s.requestsByDay[dayKey]++
@@ -332,6 +334,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			}
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
+				detail.ThinkingLevel = strings.TrimSpace(detail.ThinkingLevel)
 				if detail.Timestamp.IsZero() {
 					detail.Timestamp = time.Now()
 				}
@@ -379,12 +382,13 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
 		detail.Source,
 		detail.AuthIndex,
+		strings.TrimSpace(detail.ThinkingLevel),
 		detail.Failed,
 		tokens.InputTokens,
 		tokens.OutputTokens,

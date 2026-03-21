@@ -89,7 +89,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
-	defer reporter.trackFailure(ctx, &err)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
@@ -129,6 +130,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -178,7 +180,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 
 		if detail, ok := parseCodexUsage(line); ok {
-			reporter.publish(ctx, detail)
+			reporter.publish(ctx, detail, thinkingLevel)
 		}
 
 		var param any
@@ -199,7 +201,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
-	defer reporter.trackFailure(ctx, &err)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai-response")
@@ -233,6 +236,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -269,8 +273,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
-	reporter.publish(ctx, parseOpenAIUsage(data))
-	reporter.ensurePublished(ctx)
+	reporter.publish(ctx, parseOpenAIUsage(data), thinkingLevel)
+	reporter.ensurePublished(ctx, thinkingLevel)
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, data, &param)
 	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
@@ -289,7 +293,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
-	defer reporter.trackFailure(ctx, &err)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
@@ -328,6 +333,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -380,7 +386,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 				data := bytes.TrimSpace(line[5:])
 				if gjson.GetBytes(data, "type").String() == "response.completed" {
 					if detail, ok := parseCodexUsage(data); ok {
-						reporter.publish(ctx, detail)
+						reporter.publish(ctx, detail, thinkingLevel)
 					}
 				}
 			}
@@ -392,7 +398,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
+			reporter.publishFailure(ctx, thinkingLevel)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()

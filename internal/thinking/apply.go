@@ -2,6 +2,7 @@
 package thinking
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -241,6 +242,67 @@ func parseSuffixToConfig(rawSuffix, provider, model string) ThinkingConfig {
 	return ThinkingConfig{}
 }
 
+// ThinkingLevelForUsage returns a normalized thinking value suitable for usage reporting.
+// The body parameter should be the final request body after ApplyThinking has been applied,
+// which already contains the suffix-converted configuration (if any).
+//
+// Return values:
+//   - "na": model does not support thinking
+//   - "error": JSON parsing failed (logged)
+//   - "none": no thinking configuration
+//   - actual value: "high", "medium", "low", "8192", "auto", etc.
+func ThinkingLevelForUsage(body []byte, model string, toFormat string, providerKey string) string {
+	toFormat = strings.ToLower(strings.TrimSpace(toFormat))
+	providerKey = strings.ToLower(strings.TrimSpace(providerKey))
+	if providerKey == "" {
+		providerKey = toFormat
+	}
+
+	// Check if model supports thinking
+	baseModel := ParseSuffix(strings.TrimSpace(model)).ModelName
+	modelInfo := registry.LookupModelInfo(baseModel, providerKey)
+	if modelInfo != nil && modelInfo.Thinking == nil && !modelInfo.UserDefined {
+		return "na"
+	}
+
+	// Validate body
+	if len(body) > 0 && !gjson.ValidBytes(body) {
+		log.WithFields(log.Fields{
+			"model":    model,
+			"provider": providerKey,
+		}).Warn("thinking: invalid JSON body for usage extraction")
+		return "error"
+	}
+
+	if len(body) == 0 {
+		return "none"
+	}
+
+	// Extract directly from body - it already contains the final thinking config
+	// (including suffix-converted values if ApplyThinking was called)
+	level := thinkingValueForUsage(extractThinkingConfig(body, toFormat))
+	if level == "" {
+		return "none"
+	}
+	return level
+}
+
+func thinkingValueForUsage(config ThinkingConfig) string {
+	switch config.Mode {
+	case ModeBudget:
+		if config.Budget > 0 {
+			return strconv.Itoa(config.Budget)
+		}
+	case ModeLevel:
+		return strings.ToLower(strings.TrimSpace(string(config.Level)))
+	case ModeAuto:
+		return "auto"
+	case ModeNone:
+		return "none"
+	}
+	return ""
+}
+
 // applyUserDefinedModel applies thinking configuration for user-defined models
 // without ThinkingSupport validation.
 func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromFormat, toFormat string, suffixResult SuffixResult) ([]byte, error) {
@@ -288,11 +350,11 @@ func applyUserDefinedModel(body []byte, modelInfo *registry.ModelInfo, fromForma
 		"level":    config.Level,
 	}).Debug("thinking: applying config for user-defined model (skip validation)")
 
-	config = normalizeUserDefinedConfig(config, fromFormat, toFormat)
+	config = normalizeUserDefinedConfig(config, toFormat)
 	return applier.Apply(body, config, modelInfo)
 }
 
-func normalizeUserDefinedConfig(config ThinkingConfig, fromFormat, toFormat string) ThinkingConfig {
+func normalizeUserDefinedConfig(config ThinkingConfig, toFormat string) ThinkingConfig {
 	if config.Mode != ModeLevel {
 		return config
 	}
@@ -325,7 +387,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 		return extractGeminiConfig(body, provider)
 	case "openai":
 		return extractOpenAIConfig(body)
-	case "codex":
+	case "openai-response", "codex":
 		return extractCodexConfig(body)
 	case "iflow":
 		config := extractIFlowConfig(body)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
@@ -42,24 +43,38 @@ func newUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	return reporter
 }
 
-func (r *usageReporter) publish(ctx context.Context, detail usage.Detail) {
-	r.publishWithOutcome(ctx, detail, false)
+// CaptureThinkingLevel extracts the thinking level from the final request body
+// that will be sent to the upstream provider. It returns the thinking level
+// as a string value to be passed to publish methods, avoiding data races
+// when used across goroutines.
+func (r *usageReporter) CaptureThinkingLevel(body []byte, model string, provider string, toFormat string) string {
+	if r == nil {
+		return "none"
+	}
+	if len(body) == 0 {
+		return "none"
+	}
+	return thinking.ThinkingLevelForUsage(body, model, toFormat, provider)
 }
 
-func (r *usageReporter) publishFailure(ctx context.Context) {
-	r.publishWithOutcome(ctx, usage.Detail{}, true)
+func (r *usageReporter) publish(ctx context.Context, detail usage.Detail, thinkingLevel string) {
+	r.publishWithOutcome(ctx, detail, false, thinkingLevel)
 }
 
-func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error) {
-	if r == nil || errPtr == nil {
+func (r *usageReporter) publishFailure(ctx context.Context, thinkingLevel string) {
+	r.publishWithOutcome(ctx, usage.Detail{}, true, thinkingLevel)
+}
+
+func (r *usageReporter) trackFailure(ctx context.Context, errPtr *error, thinkingLevel *string) {
+	if r == nil || errPtr == nil || thinkingLevel == nil {
 		return
 	}
 	if *errPtr != nil {
-		r.publishFailure(ctx)
+		r.publishFailure(ctx, *thinkingLevel)
 	}
 }
 
-func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool) {
+func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Detail, failed bool, thinkingLevel string) {
 	if r == nil {
 		return
 	}
@@ -83,6 +98,9 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 			RequestedAt: r.requestedAt,
 			Failed:      failed,
 			Detail:      detail,
+			Thinking: usage.ThinkingDetail{
+				ThinkingLevel: thinkingLevel,
+			},
 		})
 	})
 }
@@ -91,7 +109,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 // It is safe to call multiple times; only the first call wins due to once.Do.
 // This is used to ensure request counting even when upstream responses do not
 // include any usage fields (tokens), especially for streaming paths.
-func (r *usageReporter) ensurePublished(ctx context.Context) {
+func (r *usageReporter) ensurePublished(ctx context.Context, thinkingLevel string) {
 	if r == nil {
 		return
 	}
@@ -106,6 +124,9 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			RequestedAt: r.requestedAt,
 			Failed:      false,
 			Detail:      usage.Detail{},
+			Thinking: usage.ThinkingDetail{
+				ThinkingLevel: thinkingLevel,
+			},
 		})
 	})
 }

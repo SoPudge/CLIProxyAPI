@@ -73,7 +73,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
-	defer reporter.trackFailure(ctx, &err)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	baseURL, apiKey := e.resolveCredentials(auth)
 	if baseURL == "" {
@@ -129,6 +130,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(translated, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -166,9 +168,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	appendAPIResponseChunk(ctx, e.cfg, body)
-	reporter.publish(ctx, parseOpenAIUsage(body))
+	reporter.publish(ctx, parseOpenAIUsage(body), thinkingLevel)
 	// Ensure we at least record the request even if upstream doesn't return usage
-	reporter.ensurePublished(ctx)
+	reporter.ensurePublished(ctx, thinkingLevel)
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, body, &param)
@@ -180,7 +182,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
-	defer reporter.trackFailure(ctx, &err)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	baseURL, apiKey := e.resolveCredentials(auth)
 	if baseURL == "" {
@@ -232,6 +235,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(translated, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -276,7 +280,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+				reporter.publish(ctx, detail, thinkingLevel)
 			}
 			if len(line) == 0 {
 				continue
@@ -295,11 +299,11 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
+			reporter.publishFailure(ctx, thinkingLevel)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 		// Ensure we record the request if no usage chunk was ever seen
-		reporter.ensurePublished(ctx)
+		reporter.ensurePublished(ctx, thinkingLevel)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
