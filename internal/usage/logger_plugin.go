@@ -93,7 +93,7 @@ type RequestDetail struct {
 	Source        string     `json:"source"`
 	AuthIndex     string     `json:"auth_index"`
 	Tokens        TokenStats `json:"tokens"`
-	ThinkingLevel string     `json:"thinking_level,omitempty"`
+	ThinkingLevel string     `json:"thinking_level"`
 	Failed        bool       `json:"failed"`
 }
 

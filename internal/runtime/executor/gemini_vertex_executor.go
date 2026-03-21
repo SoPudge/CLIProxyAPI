@@ -301,8 +301,9 @@ func (e *GeminiVertexExecutor) Refresh(_ context.Context, auth *cliproxyauth.Aut
 func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, projectID, location string, saJSON []byte) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	var body []byte
 
@@ -369,6 +370,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), "gemini")
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -406,7 +408,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		return resp, errRead
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
-	reporter.publish(ctx, parseGeminiUsage(data))
+	reporter.publish(ctx, parseGeminiUsage(data), thinkingLevel)
 
 	// For Imagen models, convert response to Gemini format before translation
 	// This ensures Imagen responses use the same format as gemini-3-pro-image-preview
@@ -427,8 +429,9 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, apiKey, baseURL string) (resp cliproxyexecutor.Response, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini")
@@ -484,6 +487,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), "gemini")
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -521,7 +525,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		return resp, errRead
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
-	reporter.publish(ctx, parseGeminiUsage(data))
+	reporter.publish(ctx, parseGeminiUsage(data), thinkingLevel)
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, body, data, &param)
 	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
@@ -532,8 +536,9 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, projectID, location string, saJSON []byte) (_ *cliproxyexecutor.StreamResult, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini")
@@ -588,6 +593,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), "gemini")
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -632,7 +638,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 			if detail, ok := parseGeminiStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+				reporter.publish(ctx, detail, thinkingLevel)
 			}
 			lines := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
 			for i := range lines {
@@ -645,7 +651,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
+			reporter.publishFailure(ctx, thinkingLevel)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()
@@ -656,8 +662,9 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, apiKey, baseURL string) (_ *cliproxyexecutor.StreamResult, err error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini")
@@ -712,6 +719,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), "gemini")
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -756,7 +764,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 			if detail, ok := parseGeminiStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+				reporter.publish(ctx, detail, thinkingLevel)
 			}
 			lines := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
 			for i := range lines {
@@ -769,7 +777,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
+			reporter.publishFailure(ctx, thinkingLevel)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()

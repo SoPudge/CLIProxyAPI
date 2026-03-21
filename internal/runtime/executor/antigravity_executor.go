@@ -203,8 +203,9 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 		auth = updatedAuth
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("antigravity")
@@ -228,6 +229,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 
+	thinkingLevel = reporter.CaptureThinkingLevel(translated, baseModel, e.Identifier(), to.String())
 	attempts := antigravityRetryAttempts(auth, e.cfg)
 
 attemptLoop:
@@ -305,11 +307,11 @@ attemptLoop:
 				return resp, err
 			}
 
-			reporter.publish(ctx, parseAntigravityUsage(bodyBytes))
+			reporter.publish(ctx, parseAntigravityUsage(bodyBytes), thinkingLevel)
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bodyBytes, &param)
 			resp = cliproxyexecutor.Response{Payload: []byte(converted), Headers: httpResp.Header.Clone()}
-			reporter.ensurePublished(ctx)
+			reporter.ensurePublished(ctx, thinkingLevel)
 			return resp, nil
 		}
 
@@ -345,8 +347,9 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 		auth = updatedAuth
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("antigravity")
@@ -370,6 +373,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 
+	thinkingLevel = reporter.CaptureThinkingLevel(translated, baseModel, e.Identifier(), to.String())
 	attempts := antigravityRetryAttempts(auth, e.cfg)
 
 attemptLoop:
@@ -483,17 +487,17 @@ attemptLoop:
 					}
 
 					if detail, ok := parseAntigravityStreamUsage(payload); ok {
-						reporter.publish(ctx, detail)
+						reporter.publish(ctx, detail, thinkingLevel)
 					}
 
 					out <- cliproxyexecutor.StreamChunk{Payload: payload}
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					recordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.publishFailure(ctx)
+					reporter.publishFailure(ctx, thinkingLevel)
 					out <- cliproxyexecutor.StreamChunk{Err: errScan}
 				} else {
-					reporter.ensurePublished(ctx)
+					reporter.ensurePublished(ctx, thinkingLevel)
 				}
 			}(httpResp)
 
@@ -509,11 +513,11 @@ attemptLoop:
 			}
 			resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
 
-			reporter.publish(ctx, parseAntigravityUsage(resp.Payload))
+			reporter.publish(ctx, parseAntigravityUsage(resp.Payload), thinkingLevel)
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, resp.Payload, &param)
 			resp = cliproxyexecutor.Response{Payload: []byte(converted), Headers: httpResp.Header.Clone()}
-			reporter.ensurePublished(ctx)
+			reporter.ensurePublished(ctx, thinkingLevel)
 
 			return resp, nil
 		}
@@ -737,8 +741,9 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		auth = updatedAuth
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("antigravity")
@@ -762,6 +767,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	baseURLs := antigravityBaseURLFallbackOrder(auth)
 	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
 
+	thinkingLevel = reporter.CaptureThinkingLevel(translated, baseModel, e.Identifier(), to.String())
 	attempts := antigravityRetryAttempts(auth, e.cfg)
 
 attemptLoop:
@@ -875,7 +881,7 @@ attemptLoop:
 					}
 
 					if detail, ok := parseAntigravityStreamUsage(payload); ok {
-						reporter.publish(ctx, detail)
+						reporter.publish(ctx, detail, thinkingLevel)
 					}
 
 					chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param)
@@ -889,10 +895,10 @@ attemptLoop:
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					recordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.publishFailure(ctx)
+					reporter.publishFailure(ctx, thinkingLevel)
 					out <- cliproxyexecutor.StreamChunk{Err: errScan}
 				} else {
-					reporter.ensurePublished(ctx)
+					reporter.ensurePublished(ctx, thinkingLevel)
 				}
 			}(httpResp)
 			return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

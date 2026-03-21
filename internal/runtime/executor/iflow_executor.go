@@ -86,8 +86,9 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		baseURL = iflowauth.DefaultAPIBaseURL
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
@@ -122,6 +123,7 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       endpoint,
 		Method:    http.MethodPost,
@@ -161,9 +163,9 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
-	reporter.publish(ctx, parseOpenAIUsage(data))
+	reporter.publish(ctx, parseOpenAIUsage(data), thinkingLevel)
 	// Ensure usage is recorded even if upstream omits usage metadata.
-	reporter.ensurePublished(ctx)
+	reporter.ensurePublished(ctx, thinkingLevel)
 
 	var param any
 	// Note: TranslateNonStream uses req.Model (original with suffix) to preserve
@@ -189,8 +191,9 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		baseURL = iflowauth.DefaultAPIBaseURL
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
@@ -230,6 +233,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       endpoint,
 		Method:    http.MethodPost,
@@ -277,7 +281,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+				reporter.publish(ctx, detail, thinkingLevel)
 			}
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
 			for i := range chunks {
@@ -286,11 +290,11 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
+			reporter.publishFailure(ctx, thinkingLevel)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 		// Guarantee a usage record exists even if the stream never emitted usage data.
-		reporter.ensurePublished(ctx)
+		reporter.ensurePublished(ctx, thinkingLevel)
 	}()
 
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

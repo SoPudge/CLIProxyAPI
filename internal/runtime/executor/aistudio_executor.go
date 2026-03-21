@@ -115,8 +115,9 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	translatedReq, body, err := e.translateRequest(req, opts, false)
 	if err != nil {
@@ -137,6 +138,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body.payload, baseModel, e.Identifier(), body.toFormat.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       endpoint,
 		Method:    http.MethodPost,
@@ -161,7 +163,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	if wsResp.Status < 200 || wsResp.Status >= 300 {
 		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
 	}
-	reporter.publish(ctx, parseGeminiUsage(wsResp.Body))
+	reporter.publish(ctx, parseGeminiUsage(wsResp.Body), thinkingLevel)
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, body.toFormat, opts.SourceFormat, req.Model, opts.OriginalRequest, translatedReq, wsResp.Body, &param)
 	resp = cliproxyexecutor.Response{Payload: ensureColonSpacedJSON([]byte(out)), Headers: wsResp.Headers.Clone()}
@@ -174,8 +176,9 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	translatedReq, body, err := e.translateRequest(req, opts, true)
 	if err != nil {
@@ -195,6 +198,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(body.payload, baseModel, e.Identifier(), body.toFormat.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       endpoint,
 		Method:    http.MethodPost,
@@ -261,7 +265,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		processEvent := func(event wsrelay.StreamEvent) bool {
 			if event.Err != nil {
 				recordAPIResponseError(ctx, e.cfg, event.Err)
-				reporter.publishFailure(ctx)
+				reporter.publishFailure(ctx, thinkingLevel)
 				out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("wsrelay: %v", event.Err)}
 				return false
 			}
@@ -276,7 +280,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					appendAPIResponseChunk(ctx, e.cfg, event.Payload)
 					filtered := FilterSSEUsageMetadata(event.Payload)
 					if detail, ok := parseGeminiStreamUsage(filtered); ok {
-						reporter.publish(ctx, detail)
+						reporter.publish(ctx, detail, thinkingLevel)
 					}
 					lines := sdktranslator.TranslateStream(ctx, body.toFormat, opts.SourceFormat, req.Model, opts.OriginalRequest, translatedReq, filtered, &param)
 					for i := range lines {
@@ -298,11 +302,11 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				for i := range lines {
 					out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON([]byte(lines[i]))}
 				}
-				reporter.publish(ctx, parseGeminiUsage(event.Payload))
+				reporter.publish(ctx, parseGeminiUsage(event.Payload), thinkingLevel)
 				return false
 			case wsrelay.MessageTypeError:
 				recordAPIResponseError(ctx, e.cfg, event.Err)
-				reporter.publishFailure(ctx)
+				reporter.publishFailure(ctx, thinkingLevel)
 				out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("wsrelay: %v", event.Err)}
 				return false
 			}

@@ -102,8 +102,9 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		baseURL = "https://api.anthropic.com"
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("claude")
 	// Use streaming translation to preserve function calling, except for claude.
@@ -167,6 +168,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(bodyForUpstream, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -235,11 +237,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		lines := bytes.Split(data, []byte("\n"))
 		for _, line := range lines {
 			if detail, ok := parseClaudeStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+				reporter.publish(ctx, detail, thinkingLevel)
 			}
 		}
 	} else {
-		reporter.publish(ctx, parseClaudeUsage(data))
+		reporter.publish(ctx, parseClaudeUsage(data), thinkingLevel)
 	}
 	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		data = stripClaudeToolPrefixFromResponse(data, claudeToolPrefix)
@@ -270,8 +272,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		baseURL = "https://api.anthropic.com"
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("claude")
 	originalPayloadSource := req.Payload
@@ -330,6 +333,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		authLabel = auth.Label
 		authType, authValue = auth.AccountInfo()
 	}
+	thinkingLevel = reporter.CaptureThinkingLevel(bodyForUpstream, baseModel, e.Identifier(), to.String())
 	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 		URL:       url,
 		Method:    http.MethodPost,
@@ -400,7 +404,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				line := scanner.Bytes()
 				appendAPIResponseChunk(ctx, e.cfg, line)
 				if detail, ok := parseClaudeStreamUsage(line); ok {
-					reporter.publish(ctx, detail)
+					reporter.publish(ctx, detail, thinkingLevel)
 				}
 				if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 					line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
@@ -413,7 +417,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 			if errScan := scanner.Err(); errScan != nil {
 				recordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.publishFailure(ctx)
+				reporter.publishFailure(ctx, thinkingLevel)
 				out <- cliproxyexecutor.StreamChunk{Err: errScan}
 			}
 			return
@@ -427,7 +431,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			line := scanner.Bytes()
 			appendAPIResponseChunk(ctx, e.cfg, line)
 			if detail, ok := parseClaudeStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+				reporter.publish(ctx, detail, thinkingLevel)
 			}
 			if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 				line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
@@ -448,7 +452,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
+			reporter.publishFailure(ctx, thinkingLevel)
 			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()

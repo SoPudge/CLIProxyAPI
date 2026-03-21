@@ -2,143 +2,118 @@ package executor
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 )
 
-func TestNewUsageReporterUsesRequestedModelSuffix(t *testing.T) {
-	reporter := newUsageReporter(context.Background(), "gemini", "gemini-2.5-pro", cliproxyexecutor.Options{SourceFormat: "gemini"}, "gemini-2.5-pro(8192)", nil)
-	if reporter.thinkingLevel != "8192" {
-		t.Fatalf("thinking level = %q, want %q", reporter.thinkingLevel, "8192")
+func TestNewUsageReporterDefaultsToNone(t *testing.T) {
+	reporter := newUsageReporter(context.Background(), "gemini", "gemini-2.5-pro", nil)
+	thinkingLevel := reporter.CaptureThinkingLevel(nil, "gemini-2.5-pro", "gemini", "gemini")
+	if thinkingLevel != "none" {
+		t.Fatalf("thinking level = %q, want %q", thinkingLevel, "none")
 	}
 }
 
-func TestResolveThinkingLevelPrefersEffectiveModelOverMetadata(t *testing.T) {
-	opts := cliproxyexecutor.Options{
-		SourceFormat: "gemini",
-		Metadata: map[string]any{
-			cliproxyexecutor.RequestedModelMetadataKey: "gemini-2.5-pro(2048)",
-		},
-	}
-
-	got := resolveThinkingLevel(context.Background(), opts, "gemini-2.5-pro(1024)")
-	if got != "1024" {
-		t.Fatalf("thinking level = %q, want %q", got, "1024")
-	}
-}
-
-func TestResolveThinkingLevelFallsBackToMetadataRequestedModel(t *testing.T) {
-	opts := cliproxyexecutor.Options{
-		SourceFormat: "claude",
-		Metadata: map[string]any{
-			cliproxyexecutor.RequestedModelMetadataKey: "claude-sonnet-4-5(4096)",
-		},
-	}
-
-	got := resolveThinkingLevel(context.Background(), opts, "")
-	if got != "4096" {
-		t.Fatalf("thinking level = %q, want %q", got, "4096")
-	}
-}
-
-func TestResolveThinkingLevelPrefersOriginalRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	recorder := httptest.NewRecorder()
-	ginCtx, _ := gin.CreateTestContext(recorder)
-	ginCtx.Set("REQUEST_BODY_OVERRIDE", `{"reasoning_effort":"low"}`)
-	ctx := context.WithValue(context.Background(), "gin", ginCtx)
-	originalRequest := []byte(`{"reasoning_effort":"high"}`)
-
-	got := resolveThinkingLevel(ctx, cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: originalRequest}, "gpt-5")
-	if got != "high" {
-		t.Fatalf("thinking level = %q, want %q", got, "high")
-	}
-}
-
-func TestResolveThinkingLevel(t *testing.T) {
+func TestCaptureThinkingLevel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name            string
-		requestedModel  string
-		sourceFormat    string
-		originalRequest []byte
-		override        any
-		want            string
+		name     string
+		model    string
+		provider string
+		toFormat string
+		body     []byte
+		want     string
 	}{
 		{
-			name:            "openai chat completions",
-			requestedModel:  "gpt-5",
-			sourceFormat:    "openai",
-			originalRequest: []byte(`{"reasoning_effort":"high"}`),
-			want:            "high",
+			name:     "openai chat completions",
+			model:    "gpt-5",
+			provider: "openai",
+			toFormat: "openai",
+			body:     []byte(`{"reasoning_effort":"high"}`),
+			want:     "high",
 		},
 		{
-			name:            "openai responses",
-			requestedModel:  "gpt-5",
-			sourceFormat:    "openai-response",
-			originalRequest: []byte(`{"reasoning":{"effort":"medium"}}`),
-			want:            "medium",
+			name:     "openai responses",
+			model:    "gpt-5",
+			provider: "openai",
+			toFormat: "openai-response",
+			body:     []byte(`{"reasoning":{"effort":"medium"}}`),
+			want:     "medium",
 		},
 		{
-			name:            "codex",
-			requestedModel:  "gpt-5-codex",
-			sourceFormat:    "codex",
-			originalRequest: []byte(`{"reasoning":{"effort":"low"}}`),
-			want:            "low",
+			name:     "codex",
+			model:    "gpt-5-codex",
+			provider: "codex",
+			toFormat: "codex",
+			body:     []byte(`{"reasoning":{"effort":"low"}}`),
+			want:     "low",
 		},
 		{
-			name:            "claude",
-			requestedModel:  "claude-sonnet-4-5",
-			sourceFormat:    "claude",
-			originalRequest: []byte(`{"thinking":{"type":"enabled","budget_tokens":2048}}`),
-			want:            "2048",
+			name:     "claude",
+			model:    "claude-sonnet-4-5",
+			provider: "claude",
+			toFormat: "claude",
+			body:     []byte(`{"thinking":{"type":"enabled","budget_tokens":2048}}`),
+			want:     "2048",
 		},
 		{
-			name:            "gemini",
-			requestedModel:  "gemini-2.5-pro",
-			sourceFormat:    "gemini",
-			originalRequest: []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`),
-			want:            "high",
+			name:     "gemini",
+			model:    "gemini-2.5-pro",
+			provider: "gemini",
+			toFormat: "gemini",
+			body:     []byte(`{"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}}`),
+			want:     "high",
 		},
 		{
-			name:            "gemini cli",
-			requestedModel:  "gemini-2.5-pro",
-			sourceFormat:    "gemini-cli",
-			originalRequest: []byte(`{"request":{"generationConfig":{"thinkingConfig":{"thinkingBudget":1024}}}}`),
-			want:            "1024",
+			name:     "gemini cli",
+			model:    "gemini-2.5-pro",
+			provider: "gemini-cli",
+			toFormat: "gemini-cli",
+			body:     []byte(`{"request":{"generationConfig":{"thinkingConfig":{"thinkingBudget":1024}}}}`),
+			want:     "1024",
 		},
 		{
-			name:           "request body override takes precedence",
-			requestedModel: "gpt-5",
-			sourceFormat:   "openai",
-			override:       `{"reasoning_effort":"high"}`,
-			want:           "high",
+			name:     "no thinking config returns none",
+			model:    "gpt-5",
+			provider: "openai",
+			toFormat: "openai",
+			body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+			want:     "none",
 		},
 		{
-			name:            "no thinking config",
-			requestedModel:  "gpt-5",
-			sourceFormat:    "openai",
-			originalRequest: []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
-			want:            "",
+			name:     "empty body returns none",
+			model:    "gpt-5",
+			provider: "openai",
+			toFormat: "openai",
+			body:     nil,
+			want:     "none",
+		},
+		{
+			name:     "processed body with budget from suffix",
+			model:    "gemini-2.5-pro",
+			provider: "gemini",
+			toFormat: "gemini",
+			body:     []byte(`{"generationConfig":{"thinkingConfig":{"thinkingBudget":8192}}}`),
+			want:     "8192",
+		},
+		{
+			name:     "claude disabled",
+			model:    "claude-sonnet-4-5",
+			provider: "claude",
+			toFormat: "claude",
+			body:     []byte(`{"thinking":{"type":"disabled"}}`),
+			want:     "none",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			if tt.override != nil {
-				recorder := httptest.NewRecorder()
-				ginCtx, _ := gin.CreateTestContext(recorder)
-				ginCtx.Set("REQUEST_BODY_OVERRIDE", tt.override)
-				ctx = context.WithValue(ctx, "gin", ginCtx)
-			}
-			if got := resolveThinkingLevel(ctx, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString(tt.sourceFormat), OriginalRequest: tt.originalRequest}, tt.requestedModel); got != tt.want {
-				t.Fatalf("thinking level = %q, want %q", got, tt.want)
+			reporter := newUsageReporter(context.Background(), tt.provider, tt.model, nil)
+			thinkingLevel := reporter.CaptureThinkingLevel(tt.body, tt.model, tt.provider, tt.toFormat)
+			if thinkingLevel != tt.want {
+				t.Fatalf("thinking level = %q, want %q", thinkingLevel, tt.want)
 			}
 		})
 	}

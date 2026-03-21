@@ -112,8 +112,9 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		return resp, err
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini-cli")
@@ -190,6 +191,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		reqHTTP.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 		applyGeminiCLIHeaders(reqHTTP, attemptModel)
 		reqHTTP.Header.Set("Accept", "application/json")
+		thinkingLevel = reporter.CaptureThinkingLevel(payload, attemptModel, e.Identifier(), to.String())
 		recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 			URL:       url,
 			Method:    http.MethodPost,
@@ -221,7 +223,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		}
 		appendAPIResponseChunk(ctx, e.cfg, data)
 		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
-			reporter.publish(ctx, parseGeminiCLIUsage(data))
+			reporter.publish(ctx, parseGeminiCLIUsage(data), thinkingLevel)
 			var param any
 			out := sdktranslator.TranslateNonStream(respCtx, to, from, attemptModel, opts.OriginalRequest, payload, data, &param)
 			resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
@@ -266,8 +268,9 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		return nil, err
 	}
 
-	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, opts, req.Model, auth)
-	defer reporter.trackFailure(ctx, &err)
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	thinkingLevel := "none"
+	defer reporter.trackFailure(ctx, &err, &thinkingLevel)
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini-cli")
@@ -335,6 +338,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		reqHTTP.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 		applyGeminiCLIHeaders(reqHTTP, attemptModel)
 		reqHTTP.Header.Set("Accept", "text/event-stream")
+		thinkingLevel = reporter.CaptureThinkingLevel(payload, attemptModel, e.Identifier(), to.String())
 		recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 			URL:       url,
 			Method:    http.MethodPost,
@@ -396,7 +400,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 					line := scanner.Bytes()
 					appendAPIResponseChunk(ctx, e.cfg, line)
 					if detail, ok := parseGeminiCLIStreamUsage(line); ok {
-						reporter.publish(ctx, detail)
+						reporter.publish(ctx, detail, thinkingLevel)
 					}
 					if bytes.HasPrefix(line, dataTag) {
 						segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, bytes.Clone(line), &param)
@@ -412,7 +416,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					recordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.publishFailure(ctx)
+					reporter.publishFailure(ctx, thinkingLevel)
 					out <- cliproxyexecutor.StreamChunk{Err: errScan}
 				}
 				return
@@ -421,12 +425,12 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			data, errRead := io.ReadAll(resp.Body)
 			if errRead != nil {
 				recordAPIResponseError(ctx, e.cfg, errRead)
-				reporter.publishFailure(ctx)
+				reporter.publishFailure(ctx, thinkingLevel)
 				out <- cliproxyexecutor.StreamChunk{Err: errRead}
 				return
 			}
 			appendAPIResponseChunk(ctx, e.cfg, data)
-			reporter.publish(ctx, parseGeminiCLIUsage(data))
+			reporter.publish(ctx, parseGeminiCLIUsage(data), thinkingLevel)
 			var param any
 			segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, data, &param)
 			for i := range segments {
